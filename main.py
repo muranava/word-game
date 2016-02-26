@@ -25,7 +25,8 @@ class Card(object):
         return {
             "title": self.word,
             "text": "%s; \"%s\"; Example: _%s_" % (self.kind, self.definition, self.example),
-            "color": self.color()
+            "color": self.color(),
+            "mrkdwn_in": ["text"],
         }
 
 
