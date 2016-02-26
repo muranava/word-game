@@ -220,6 +220,11 @@ def main():
                                     channel=CHANNEL,
                                     text="Not everybody has submitted a word! (%s)" % " ".join(["<@%s>" % u for u in list(set(user_to_im.keys()) - set(game.submissions.keys()))]))
                                 continue
+                    elif message['text'] == 'reset':
+                        send(CHANNEL, "Resetting!")
+                        game = None
+                        starting_game = False
+                        players = set()
 
                 elif in_private_chat(message, sc):
                     user = message['user']
