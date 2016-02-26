@@ -122,7 +122,7 @@ def main():
             messages = sc.rtm_read()
             for message in messages:
                 if in_game_channel(message):
-                    if "new" in message['text'].lower():
+                    if re.search(r'\bnew\b', message['text'].lower()):
                         if game:
                             sc.api_call(
                                 "chat.postMessage",
@@ -141,7 +141,7 @@ def main():
                         players = set()
                         starting_game = True
                         send(CHANNEL, "Starting a new game! Say 'join' to join in!")
-                    elif "join" in message['text'].lower():
+                    elif re.search(r'\bjoin\b', message['text'].lower()):
                         if game:
                             sc.api_call(
                                 "chat.postMessage",
@@ -158,7 +158,7 @@ def main():
                             continue
 
                         players.add(message['user'])
-                    elif "go" in message['text'].lower():
+                    elif re.search(r'\bgo+\b', message['text'].lower()):
                         if not starting_game:
                             send(CHANNEL, "A game hasn't been started! Say 'new' to start a new game.")
                             continue
@@ -203,7 +203,7 @@ def main():
                                 channel=im,
                                 username=USERNAME,
                                 text=wantedform)
-                    elif "done" in message['text'].lower():
+                    elif re.search(r'\bdone\b', message['text'].lower()):
                         if game:
                             if len(game.submissions) == len(user_to_im) or ((datetime.datetime.now() - game.starttime).seconds > 180 and len(game.submissions) > 0):
                                 for user, (word, cards, definition) in game.submissions.iteritems():
@@ -221,6 +221,8 @@ def main():
                                     channel=CHANNEL,
                                     text="Not everybody has submitted a word! (%s)" % " ".join(["<@%s>" % u for u in list(set(user_to_im.keys()) - set(game.submissions.keys()))]))
                                 continue
+                        else:
+                            send(CHANNEL, "No game running right now! Say 'new' to start a new game.")
                     elif message['text'] == 'reset':
                         send(CHANNEL, "Resetting!")
                         game = None
