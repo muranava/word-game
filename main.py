@@ -183,20 +183,20 @@ def main():
                             "chat.postMessage",
                             channel=CHANNEL,
                             username=USERNAME,
-                            text="Starting a new game of %s with %s!\nSay 'done' when everyone is done! (You have been IMed your cards individually)\nThe main word is:" % (GAME, format_list(["<@%s>" % u for u in players])),
+                            text="Starting a new game of %s with %s!\nSay 'done' when everyone is done! (You have been IMed your word parts individually)\nThe main word part is:" % (GAME, format_list(["<@%s>" % u for u in players])),
                             attachments=json.dumps([game.main_word.as_attachment()]))
                         for user, im in user_to_im.iteritems():
                             sc.api_call(
                                 "chat.postMessage",
                                 channel=im,
                                 username=USERNAME,
-                                text="The main word is:",
+                                text="The main word part is:",
                                 attachments=json.dumps([game.main_word.as_attachment()]))
                             sc.api_call(
                                 "chat.postMessage",
                                 channel=im,
                                 username=USERNAME,
-                                text="Your words are:",
+                                text="Your word parts are:",
                                 attachments=json.dumps([card.as_attachment() for card in game.user_words[user]]))
                             sc.api_call(
                                 "chat.postMessage",
@@ -223,6 +223,12 @@ def main():
                                 continue
                         else:
                             send(CHANNEL, "No game running right now! Say 'new' to start a new game.")
+                    elif re.search(r'\brules\b', message['text'].lower()):
+                        send(CHANNEL, """How to play:
+1. In each round, everyone will be given word parts, and there will be a main word part
+2. Each person must combine their word parts to make a single word, and define that word
+3. At the end, everyone's words will be shown!
+Have fun!""")
                     elif message['text'] == 'reset':
                         send(CHANNEL, "Resetting!")
                         game = None
