@@ -226,7 +226,7 @@ def main():
                     elif re.search(r'\brules\b', message['text'].lower()):
                         send(CHANNEL, """How to play:
 1. In each round, everyone will be given word parts, and there will be a main word part
-2. Each person must combine their word parts to make a single word, and define that word
+2. Each person must combine their word parts to make a new, fake word, and come up with a (hopefully fun) definition of that word
 3. At the end, everyone's words will be shown!
 Have fun!""")
                     elif message['text'] == 'reset':
