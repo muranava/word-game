@@ -1,5 +1,6 @@
 from consts import SLACK_TOKEN, CHANNEL, SELF, USERNAME, GAME
 
+from collections import defaultdict
 from slackclient import SlackClient
 import json
 import random
@@ -48,7 +49,11 @@ with open('words.csv', 'rb') as f:
         else:
             raise ValueError("Bad word kind: %s" % kind)
 
-WAITING_FOR_START, WAITING_FOR_PLAYERS, WAITING_FOR_WORDS = range(3)
+WAITING_FOR_START, WAITING_FOR_PLAYERS, WAITING_FOR_WORDS, WAITING_FOR_VOTES = range(4)
+
+PLAYER_WAIT_TIMEOUT = 15 * 60
+WORD_WAIT_TIMEOUT = 5 * 60
+VOTE_WAIT_TIMEOUT = 90
 
 class Game(object):
     def __init__(self, sc):
@@ -92,10 +97,11 @@ Have fun!""")
 
         elif self.state == WAITING_FOR_START:
             if re.search(r'\bnew\b', message['text'].lower()):
-                self.players = set(["USLACKBOT"])
+                self.players = set()
                 self.new_game_message_ts = self.send("Starting a new game! React with :hand: to this message to join! Say _\"go\"_ to start the game.")
                 self.react_with("hand", self.new_game_message_ts)
                 self.state = WAITING_FOR_PLAYERS
+                self.wait_for_player_time = datetime.datetime.now()
             elif re.search(r'\bgo+\b', message['text'].lower()):
                 self.send("A game hasn't been started! Say _\"new\"_ to start a new game.")
 
@@ -111,6 +117,7 @@ Have fun!""")
                 self.done_players = set()
                 self.submissions = {}
                 self.user_to_im = {}
+                self.wait_for_words_time = datetime.datetime.now()
                 for user in self.players:
                     self.user_to_im[user] = self.get_im_for_user(user)
 
@@ -136,6 +143,9 @@ The main word part is:""".strip() % (GAME, format_list(["<@%s>" % u for u in sel
                 self.send("A game is already in progress!")
             elif re.search(r'\bgo+\b', message['text'].lower()):
                 self.send("A game is already in progress!")
+
+        elif self.state == WAITING_FOR_VOTES:
+            pass
 
     def handle_im(self, message):
         if self.state == WAITING_FOR_START:
@@ -169,6 +179,8 @@ The main word part is:""".strip() % (GAME, format_list(["<@%s>" % u for u in sel
                 else:
                     self.reply(message, "Your submission: *%s*: \"%s\"" % (word, definition), attachments=[c.as_attachment() for c in used_cards])
                     self.submissions[user] = (word, used_cards, definition)
+        elif self.state == WAITING_FOR_VOTES:
+            pass
 
     def handle_emoji_reaction(self, message):
         added = message['type'] == 'reaction_added'
@@ -188,10 +200,51 @@ The main word part is:""".strip() % (GAME, format_list(["<@%s>" % u for u in sel
                 #!!
                 self.done_players.remove(user)
 
-            print self.done_players
-
             if self.check_for_done():
                 self.send_words()
+        elif self.state == WAITING_FOR_VOTES and ts in self.word_ts_to_user and reaction == "+1":
+            if added:
+                self.user_to_votes[user] += 1
+            else:
+                self.user_to_votes[user] -= 1
+
+    def seconds_since(self, time):
+        return (datetime.datetime.now() - time).seconds
+
+    def handle_time_update(self):
+        if self.state == WAITING_FOR_PLAYERS and self.seconds_since(self.wait_for_player_time) > PLAYER_WAIT_TIMEOUT:
+            self.send("The game timed out. Say _\"new\"_ to start a new game.")
+            self.state = WAITING_FOR_START
+        elif self.state == WAITING_FOR_WORDS and self.seconds_since(self.wait_for_words_time) > WORD_WAIT_TIMEOUT:
+            if len(self.submissions) == 0:
+                self.send("Waiting too long, and nobody sent words. Say _\"new\"_ to start a new game.")
+                self.state = WAITING_FOR_START
+            else:
+                self.send("Timer ran out. Current words are")
+                self.send_words()
+        elif self.state == WAITING_FOR_VOTES and self.seconds_since(self.wait_for_votes_time) > VOTE_WAIT_TIMEOUT:
+            self.handle_votes()
+
+    def handle_votes(self):
+        if all(x == 0 for x in self.user_to_votes.values()):
+            self.send("Nobody voted! Everyone wins! :tada:")
+        else:
+            max_votes = 1
+            users_with_max_votes = []
+            for user, votes in self.user_to_votes.iteritems():
+                if votes == max_votes:
+                    users_with_max_votes.append(user)
+                elif votes > max_votes:
+                    max_votes = votes
+                    users_with_max_votes = [user]
+
+            vote_words = "1 vote" if max_votes == 1 else "%s votes" % max_votes
+            if len(users_with_max_votes) == 1:
+                self.send(":tada: <@%s> wins with %s! :tada: (But everyone did great! :clap:)" % (users_with_max_votes[0], vote_words))
+            else:
+                self.send(":tada: %s win with %s! :tada: (But everyone did great! :clap:)" % (format_list(["<@%s>" % u for u in users_with_max_votes]), vote_words))
+
+        self.state = WAITING_FOR_START
 
     def deal_cards(self):
         roots = list(ROOT_WORDS)
@@ -226,10 +279,17 @@ The main word part is:""".strip() % (GAME, format_list(["<@%s>" % u for u in sel
             self.state = WAITING_FOR_START
             return
 
+        self.word_ts_to_user = {}
+        self.user_to_votes = defaultdict(int)
         for user, (word, cards, definition) in self.submissions.iteritems():
-            self.send("<@%s> made the word: *%s*, meaning: \"%s\", out of:" % (user, word, definition),
-                 attachments=[card.as_attachment() for card in cards])
-        self.state = WAITING_FOR_START
+            ts = self.send(
+                "<@%s> made the word: *%s*, meaning: \"%s\", out of:" % (user, word, definition),
+                attachments=[card.as_attachment() for card in cards])
+            self.react_with("+1", ts)
+            self.word_ts_to_user[ts] = user
+        self.send("Vote :+1: on your favorite words! Results will be shown in %s seconds" % VOTE_WAIT_TIMEOUT)
+        self.wait_for_votes_time = datetime.datetime.now()
+        self.state = WAITING_FOR_VOTES
 
     def get_im_for_user(self, user):
         return json.loads(self.sc.api_call("im.open", user=user))['channel']['id']
@@ -285,6 +345,8 @@ def main():
                     game.handle_im(message)
                 elif is_emoji_reaction(message):
                     game.handle_emoji_reaction(message)
+
+            game.handle_time_update()
             time.sleep(0.5)
     else:
         print "Connection Failed, invalid token?"
