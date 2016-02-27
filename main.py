@@ -6,6 +6,7 @@ import random
 import re
 import csv
 import datetime
+import time
 
 class Card(object):
     def __init__(self, word, kind, definition, example):
@@ -89,6 +90,14 @@ def in_private_chat(message, sc):
         "text" in message and
         "user" in message)
 
+def is_emoji_reaction(message):
+    return (
+        (message['type'] == 'reaction_added' or message['type'] == 'reaction_removed') and
+        message["item"]["type"] == "message" and
+        message["item"]["channel"] == CHANNEL and
+        message["user"] != SELF
+    )
+
 wantedform = "Reply in the form: \"word (word-o-parts): definition\". (E.g. \"superchronescence (super-chron-escence): the act of becoming a time-powered superhero\")"
 reg = re.compile(r'\s*(\S+)\s*\("?([^)]+)"?\)\s*:\s*(.*)')
 
@@ -108,14 +117,25 @@ def main():
     game = None
     players = set()
     starting_game = False
+    game_start_message_ts = None
+    waiting_for_words = False
+    wait_for_words_message_ts = None
+    done_players = set()
 
-    def send(channel, text, attachments=None):
-        sc.api_call(
+    def send(text, channel=CHANNEL, attachments=None):
+        return json.loads(sc.api_call(
             "chat.postMessage",
             channel=channel,
             username=USERNAME,
             text=text,
-            attachments=json.dumps(attachments))
+            attachments=json.dumps(attachments)))['ts']
+
+    def react_with(emoji, ts, channel=CHANNEL):
+        sc.api_call(
+            "reactions.add",
+            name=emoji,
+            timestamp=ts,
+            channel=channel)
 
     if sc.rtm_connect():
         while True:
@@ -124,53 +144,25 @@ def main():
                 if in_game_channel(message):
                     if re.search(r'\bnew\b', message['text'].lower()):
                         if game:
-                            sc.api_call(
-                                "chat.postMessage",
-                                channel=CHANNEL,
-                                username=USERNAME,
-                                text="A game is already in progress! Say 'done' to show results of the current game.")
+                            send("A game is already in progress! Say _\"done\"_ to show results of the current game.")
                             continue
                         elif starting_game:
-                            sc.api_call(
-                                "chat.postMessage",
-                                channel=CHANNEL,
-                                username=USERNAME,
-                                text="A game is already started! Say 'join' to join.")
+                            send("A game is already started! React with :raised_hand: to the message above to join!.")
                             continue
 
                         players = set()
                         starting_game = True
-                        send(CHANNEL, "Starting a new game! Say 'join' to join in!")
-                    elif re.search(r'\bjoin\b', message['text'].lower()):
-                        if game:
-                            sc.api_call(
-                                "chat.postMessage",
-                                channel=CHANNEL,
-                                username=USERNAME,
-                                text="A game is already in progress!")
-                            continue
-                        elif not starting_game:
-                            sc.api_call(
-                                "chat.postMessage",
-                                channel=CHANNEL,
-                                username=USERNAME,
-                                text="A game hasn't been started! Say 'new' to start a new game.")
-                            continue
-
-                        players.add(message['user'])
+                        game_start_message_ts = send("Starting a new game! React with :hand: to this message to join! Say _\"go\"_ to start the game.")
+                        react_with("hand", game_start_message_ts)
                     elif re.search(r'\bgo+\b', message['text'].lower()):
                         if not starting_game:
-                            send(CHANNEL, "A game hasn't been started! Say 'new' to start a new game.")
+                            send("A game hasn't been started! Say _\"new\"_ to start a new game.")
                             continue
                         elif starting_game and len(players) == 0:
-                            send(CHANNEL, "Nobody has joined the current game yet :(. Say 'join' to join the game!")
+                            send("Nobody has joined the current game yet :(. Say _\"join\"_ to join the game!")
                             continue
                         elif game:
-                            sc.api_call(
-                                "chat.postMessage",
-                                channel=CHANNEL,
-                                username=USERNAME,
-                                text="A game is already in progress! Say 'done' to show results of the current game.")
+                            send("A game is already in progress! Say _\"done\"_ to show results of the current game.")
                             continue
 
                         starting_game = False
@@ -179,58 +171,39 @@ def main():
                             user_to_im[user] = json.loads(sc.api_call("im.open", user=user))['channel']['id']
 
                         game = Game(user_to_im.keys())
-                        sc.api_call(
-                            "chat.postMessage",
-                            channel=CHANNEL,
-                            username=USERNAME,
-                            text="Starting a new game of %s with %s!\nSay 'done' when everyone is done! (You have been IMed your word parts individually)\nThe main word part is:" % (GAME, format_list(["<@%s>" % u for u in players])),
-                            attachments=json.dumps([game.main_word.as_attachment()]))
+                        waiting_for_words = True
+                        done_players = set()
+                        wait_for_words_message_ts = send("Starting a new game of %s with %s!\nReact with :ok_hand: to this message when you are done. (You have been IMed your word parts individually)\nThe main word part is:" % (GAME, format_list(["<@%s>" % u for u in players])),
+                             attachments=[game.main_word.as_attachment()])
+                        react_with("ok_hand", wait_for_words_message_ts)
+
                         for user, im in user_to_im.iteritems():
-                            sc.api_call(
-                                "chat.postMessage",
-                                channel=im,
-                                username=USERNAME,
-                                text="The main word part is:",
-                                attachments=json.dumps([game.main_word.as_attachment()]))
-                            sc.api_call(
-                                "chat.postMessage",
-                                channel=im,
-                                username=USERNAME,
-                                text="Your word parts are:",
-                                attachments=json.dumps([card.as_attachment() for card in game.user_words[user]]))
-                            sc.api_call(
-                                "chat.postMessage",
-                                channel=im,
-                                username=USERNAME,
-                                text=wantedform)
+                            send("The main word part is:", channel=im,
+                                 attachments=[game.main_word.as_attachment()])
+                            send("Your word parts are:", channel=im,
+                                 attachments=[card.as_attachment() for card in game.user_words[user]])
+                            send(wantedform, channel=im)
                     elif re.search(r'\bdone\b', message['text'].lower()):
                         if game:
                             if len(game.submissions) == len(user_to_im) or ((datetime.datetime.now() - game.starttime).seconds > 180 and len(game.submissions) > 0):
                                 for user, (word, cards, definition) in game.submissions.iteritems():
-                                    sc.api_call(
-                                        "chat.postMessage",
-                                        channel=CHANNEL,
-                                        username=USERNAME,
-                                        text=("<@%s> made the word: *%s*, meaning: \"%s\", out of:" % (user, word, definition)),
-                                        attachments=json.dumps([card.as_attachment() for card in cards]))
+                                    send("<@%s> made the word: *%s*, meaning: \"%s\", out of:" % (user, word, definition),
+                                         attachments=[card.as_attachment() for card in cards])
                                 game = None
+                                waiting_for_words = False
                             else:
-                                sc.api_call(
-                                    "chat.postMessage",
-                                    username=USERNAME,
-                                    channel=CHANNEL,
-                                    text="Not everybody has submitted a word! (%s)" % " ".join(["<@%s>" % u for u in list(set(user_to_im.keys()) - set(game.submissions.keys()))]))
+                                send("Not everybody has submitted a word! (%s)" % " ".join(["<@%s>" % u for u in list(set(user_to_im.keys()) - set(game.submissions.keys()))]))
                                 continue
                         else:
-                            send(CHANNEL, "No game running right now! Say 'new' to start a new game.")
+                            send("No game running right now! Say _\"new\"_ to start a new game.")
                     elif re.search(r'\brules\b', message['text'].lower()):
-                        send(CHANNEL, """How to play:
+                        send("""How to play:
 1. In each round, everyone will be given word parts, and there will be a main word part
 2. Each person must combine their word parts to make a new, fake word, and come up with a (hopefully fun) definition of that word
 3. At the end, everyone's words will be shown!
 Have fun!""")
                     elif message['text'] == 'reset':
-                        send(CHANNEL, "Resetting!")
+                        send("Resetting!")
                         game = None
                         starting_game = False
                         players = set()
@@ -239,18 +212,13 @@ Have fun!""")
                     user = message['user']
 
                     def reply(m, att=None):
-                        sc.api_call(
-                            "chat.postMessage",
-                            channel=message['channel'],
-                            username=USERNAME,
-                            text=m,
-                            attachments=json.dumps(att))
+                        send(m, channel=message['channel'], attachments=att)
 
                     if not game:
-                        reply("No game is running! Say \'go\' in <#%s> to start a new game." % CHANNEL)
+                        reply("No game is running! Say _\"go\"_ in <#%s> to start a new game." % CHANNEL)
                         continue
                     elif user not in user_to_im:
-                        reply("You're not in the current game. Join <#%s> to be part of games." % CHANNEL)
+                        reply("You're not in the current game. Watch in <#%s> for new games starting." % CHANNEL)
                         continue
 
                     text = message['text']
@@ -275,7 +243,36 @@ Have fun!""")
                         else:
                             reply("Your submission: *%s*: \"%s\"" % (word, definition), att=[c.as_attachment() for c in used_cards])
                             game.submissions[user] = (word, used_cards, definition)
+                elif is_emoji_reaction(message):
+                    added = message['type'] == 'reaction_added'
+                    user = message['user']
 
+                    if starting_game and message['item']['ts'] == game_start_message_ts and message['reaction'] == "hand":
+                        if added:
+                            players.add(user)
+                        else:
+                            players.remove(user)
+                    if waiting_for_words and message['item']['ts'] == wait_for_words_message_ts and message['reaction'] == "ok_hand":
+                        if added:
+                            done_players.add(user)
+                        else:
+                            done_players.remove(user)
+
+                        if len(done_players) == len(user_to_im):
+                            if len(game.submissions) == 0:
+                                send("Everyone readied up but nobody submitted words!? :confused: Game over, I guess?")
+                                game = None
+                                waiting_for_words = False
+                                continue
+
+                            for user, (word, cards, definition) in game.submissions.iteritems():
+                                send("<@%s> made the word: *%s*, meaning: \"%s\", out of:" % (user, word, definition),
+                                     attachments=[card.as_attachment() for card in cards])
+                            game = None
+                            waiting_for_words = False
+
+
+            time.sleep(0.5)
     else:
         print "Connection Failed, invalid token?"
 
